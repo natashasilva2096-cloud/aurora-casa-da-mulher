@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('ui/Estilos') ?>
+</head>
+<body>
+  <button class="saida-rapida" id="saida-rapida" type="button" aria-label="Sair rápido para outro site">Sair rápido ✕</button>
+
+  <main class="app">
+    <header class="topo">
+      <div class="marca">Aurora<small>Casa da Mulher · Salvador</small></div>
+      <? if (ambiente !== 'producao') { ?><span class="ambiente-selo"><?= ambiente ?></span><? } ?>
+    </header>
+
+    <!-- ===================== ENTRADA (RF01) ===================== -->
+    <section class="tela" id="tela-entrada" aria-labelledby="t-entrada">
+      <h1 id="t-entrada">Apoio e proteção, quando você precisar</h1>
+      <div class="abas" role="tablist">
+        <button type="button" class="ativa" data-aba="entrar" role="tab">Entrar</button>
+        <button type="button" data-aba="cadastro" role="tab">Criar conta</button>
+      </div>
+
+      <form id="form-entrar" class="cartao" novalidate>
+        <label for="entrar-email">E-mail</label>
+        <input id="entrar-email" name="email" type="email" autocomplete="username" required>
+        <label for="entrar-senha">Senha</label>
+        <input id="entrar-senha" name="senha" type="password" autocomplete="current-password" required>
+        <div class="erro-campo" id="erro-entrar" role="alert"></div>
+        <div class="linha-botoes"><button type="submit">Entrar</button></div>
+      </form>
+
+      <form id="form-cadastro" class="cartao" novalidate hidden>
+        <label for="cad-nome">Nome</label>
+        <input id="cad-nome" name="nome" autocomplete="name" required>
+        <div class="erro-campo" data-erro="nome"></div>
+        <label for="cad-email">E-mail</label>
+        <input id="cad-email" name="email" type="email" autocomplete="email" required>
+        <div class="erro-campo" data-erro="email"></div>
+        <label for="cad-telefone">Celular com DDD</label>
+        <input id="cad-telefone" name="telefone" type="tel" inputmode="tel" placeholder="(71) 99999-9999" autocomplete="tel" required>
+        <div class="erro-campo" data-erro="telefone"></div>
+        <label for="cad-bairro">Bairro (opcional)</label>
+        <input id="cad-bairro" name="bairro" autocomplete="address-level3">
+        <div class="erro-campo" data-erro="bairro"></div>
+        <label for="cad-senha">Senha</label>
+        <input id="cad-senha" name="senha" type="password" autocomplete="new-password" required>
+        <div class="suave">De 8 a 64 caracteres, com letras e números.</div>
+        <div class="erro-campo" data-erro="senha"></div>
+        <label class="check" for="cad-lgpd">
+          <input id="cad-lgpd" name="consentimentoLgpd" type="checkbox">
+          <span>Concordo que meus dados e minha localização sejam usados <strong>apenas</strong> para pedir ajuda aos meus contatos de confiança e para o atendimento da Casa da Mulher. Posso excluir minha conta quando quiser (LGPD).</span>
+        </label>
+        <div class="erro-campo" data-erro="consentimentoLgpd"></div>
+        <div class="erro-campo" id="erro-cadastro" role="alert"></div>
+        <div class="linha-botoes"><button type="submit">Criar conta</button></div>
+      </form>
+
+      <button type="button" class="secundario" data-ir="pontos">Ver locais de atendimento sem entrar</button>
+      <div class="emergencia" data-emergencia></div>
+    </section>
+
+    <!-- ===================== INÍCIO / PÂNICO (RF03) ===================== -->
+    <section class="tela" id="tela-inicio" aria-labelledby="t-inicio">
+      <h1 id="t-inicio">Olá, <span data-nome></span></h1>
+      <div class="panico-area">
+        <button type="button" class="panico" id="botao-panico" aria-describedby="panico-ajuda">
+          <svg viewBox="0 0 232 232" aria-hidden="true"><circle cx="116" cy="116" r="112"></circle></svg>
+          <span>PEDIR AJUDA<small>Segure por 2 segundos</small></span>
+        </button>
+        <p class="suave" id="panico-ajuda" style="text-align:center;margin-top:12px">
+          Seus contatos de confiança recebem um alerta com sua localização em tempo real.
+        </p>
+      </div>
+      <div class="aviso-caixa" id="aviso-sem-contatos" hidden>
+        Você ainda não cadastrou contatos de confiança. <button type="button" class="fantasma" data-ir="contatos">Cadastrar agora</button>
+      </div>
+      <div class="atalhos">
+        <button type="button" class="atalho" data-ir="contatos"><strong>Contatos de confiança</strong><span>Quem recebe seu alerta</span></button>
+        <button type="button" class="atalho" data-ir="pontos"><strong>Locais seguros</strong><span>Delegacia, Defensoria, acolhimento</span></button>
+        <button type="button" class="atalho" data-ir="atendimento"><strong>Apoio psicossocial</strong><span>Agende com a equipe</span></button>
+        <button type="button" class="atalho" data-ir="juridico"><strong>Orientação jurídica</strong><span>NUDEM / Defensoria</span></button>
+      </div>
+      <div class="emergencia" data-emergencia></div>
+      <div class="linha-botoes">
+        <button type="button" class="secundario" data-ir="equipe" id="atalho-equipe" hidden>Painel da equipe</button>
+        <button type="button" class="fantasma" id="botao-conta">Minha conta</button>
+        <button type="button" class="fantasma" id="botao-sair">Sair</button>
+      </div>
+    </section>
+
+    <!-- ===================== ALERTA ATIVO (RF03.4 / RF04) ===================== -->
+    <section class="tela" id="tela-alerta" aria-labelledby="t-alerta" aria-live="polite">
+      <h1 id="t-alerta"><span class="pulso" aria-hidden="true"></span>Alerta ativo</h1>
+      <div class="cartao alerta-status">
+        <div class="estado"><span>Contatos avisados</span><span id="al-envio">—</span></div>
+        <div class="estado"><span>Localização</span><span id="al-local">—</span></div>
+        <div class="estado"><span>Última atualização</span><span id="al-atualizacao">—</span></div>
+      </div>
+      <div class="aviso-caixa" id="al-aviso" hidden></div>
+      <div class="cartao" id="al-ponto" hidden>
+        <div class="suave">Local de atendimento mais próximo</div>
+        <h2 style="margin-top:4px" id="al-ponto-nome"></h2>
+        <div class="suave" id="al-ponto-endereco"></div>
+        <div class="linha-botoes"><button type="button" class="secundario" id="al-ponto-rota">Ver rota</button></div>
+      </div>
+      <div class="emergencia" data-emergencia></div>
+      <div class="linha-botoes"><button type="button" id="botao-encerrar">Estou segura — encerrar alerta</button></div>
+      <p class="suave" style="margin-top:12px">Mantenha esta tela aberta para continuar compartilhando sua localização.</p>
+    </section>
+
+    <!-- ===================== CONTATOS (RF02) ===================== -->
+    <section class="tela" id="tela-contatos" aria-labelledby="t-contatos">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-contatos">Contatos de confiança</h1>
+      <p class="suave">Até 5 pessoas. Elas recebem o alerta por e-mail com o link da sua localização.</p>
+      <ul class="lista" id="lista-contatos"></ul>
+      <form id="form-contato" class="cartao" novalidate>
+        <h2 style="margin-top:0" id="form-contato-titulo">Adicionar contato</h2>
+        <input type="hidden" name="id">
+        <label for="ct-nome">Nome</label>
+        <input id="ct-nome" name="nome" required>
+        <div class="erro-campo" data-erro="nome"></div>
+        <label for="ct-email">E-mail</label>
+        <input id="ct-email" name="email" type="email" required>
+        <div class="erro-campo" data-erro="email"></div>
+        <label for="ct-telefone">Celular (opcional)</label>
+        <input id="ct-telefone" name="telefone" type="tel" inputmode="tel">
+        <div class="erro-campo" data-erro="telefone"></div>
+        <label for="ct-relacao">Relação (opcional)</label>
+        <input id="ct-relacao" name="relacao" placeholder="Mãe, irmã, amiga...">
+        <div class="erro-campo" id="erro-contato" role="alert"></div>
+        <div class="linha-botoes">
+          <button type="button" class="secundario" id="ct-cancelar" hidden>Cancelar</button>
+          <button type="submit">Salvar contato</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ===================== PONTOS SEGUROS (RF06) ===================== -->
+    <section class="tela" id="tela-pontos" aria-labelledby="t-pontos">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-pontos">Locais seguros perto de você</h1>
+      <p class="suave">Somente locais oficiais de atendimento validados pela Casa da Mulher.</p>
+      <div class="chips" id="chips-tipos"></div>
+      <div class="info-caixa" id="pontos-sem-gps" hidden>Não conseguimos sua localização. Mostrando todos os locais em ordem alfabética.</div>
+      <ul class="lista" id="lista-pontos"><li class="carregando">Buscando locais…</li></ul>
+    </section>
+
+    <!-- ===================== ROTA (RF05) ===================== -->
+    <section class="tela" id="tela-rota" aria-labelledby="t-rota">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-rota">Rota até <span id="rota-destino"></span></h1>
+      <div class="chips" id="chips-modo">
+        <button type="button" class="chip ativa" data-modo="WALKING">A pé</button>
+        <button type="button" class="chip" data-modo="DRIVING">Carro / app</button>
+        <button type="button" class="chip" data-modo="TRANSIT">Ônibus / metrô</button>
+      </div>
+      <div class="cartao">
+        <div class="estado"><span>Distância</span><strong id="rota-distancia">—</strong></div>
+        <div class="estado"><span>Tempo estimado</span><strong id="rota-tempo">—</strong></div>
+        <div class="suave" id="rota-endereco" style="margin-top:8px"></div>
+        <div class="suave" id="rota-horario"></div>
+      </div>
+      <div class="aviso-caixa" id="rota-aviso"></div>
+      <a class="botao" id="rota-link" href="#" target="_blank" rel="noopener">Abrir no Google Maps</a>
+      <div class="linha-botoes"><a class="botao secundario" id="rota-ligar" href="#" hidden>Ligar para o local</a></div>
+      <h2>Passo a passo</h2>
+      <ol class="passos" id="rota-passos"><li class="suave">Carregando…</li></ol>
+    </section>
+
+    <!-- ===================== ATENDIMENTO (RF07 / RF08) ===================== -->
+    <section class="tela" id="tela-atendimento" aria-labelledby="t-atendimento">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-atendimento">Solicitar atendimento</h1>
+      <form id="form-atendimento" class="cartao" novalidate>
+        <label for="at-tipo">Tipo de atendimento</label>
+        <select id="at-tipo" name="tipo">
+          <option value="PSICOSSOCIAL">Acolhimento psicossocial</option>
+          <option value="JURIDICO">Orientação jurídica (NUDEM / Defensoria)</option>
+        </select>
+        <div class="erro-campo" data-erro="tipo"></div>
+        <label for="at-data">Data preferida</label>
+        <input id="at-data" name="dataPreferida" type="date">
+        <div class="erro-campo" data-erro="dataPreferida"></div>
+        <label for="at-periodo">Período</label>
+        <select id="at-periodo" name="periodo">
+          <option value="MANHA">Manhã</option>
+          <option value="TARDE">Tarde</option>
+        </select>
+        <div class="erro-campo" data-erro="periodo"></div>
+        <label for="at-modalidade">Como prefere ser atendida</label>
+        <select id="at-modalidade" name="modalidade">
+          <option value="PRESENCIAL">Presencial na Casa da Mulher</option>
+          <option value="TELEFONE">Ligação telefônica</option>
+          <option value="VIDEO">Videochamada</option>
+        </select>
+        <div class="erro-campo" data-erro="modalidade"></div>
+        <label for="at-obs">Observação (opcional)</label>
+        <textarea id="at-obs" name="observacao" maxlength="500" placeholder="Ex.: melhor horário para ligar, se pode receber ligação..."></textarea>
+        <div class="erro-campo" data-erro="observacao"></div>
+        <div class="erro-campo" id="erro-atendimento" role="alert"></div>
+        <div class="linha-botoes"><button type="submit">Enviar solicitação</button></div>
+      </form>
+      <h2>Minhas solicitações</h2>
+      <ul class="lista" id="lista-atendimentos"></ul>
+    </section>
+
+    <!-- ===================== JURÍDICO (RF08) ===================== -->
+    <section class="tela" id="tela-juridico" aria-labelledby="t-juridico">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-juridico">Orientação jurídica</h1>
+      <div class="cartao" id="juridico-conteudo"><div class="carregando">Carregando…</div></div>
+      <div class="linha-botoes"><button type="button" id="juridico-solicitar">Solicitar atendimento jurídico</button></div>
+    </section>
+
+    <!-- ===================== CONTA ===================== -->
+    <section class="tela" id="tela-conta" aria-labelledby="t-conta">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-conta">Minha conta</h1>
+      <div class="cartao" id="conta-dados"></div>
+      <div class="cartao">
+        <h2 style="margin-top:0">Excluir minha conta</h2>
+        <p class="suave">Apaga seus dados, contatos e histórico de localização. Esta ação não pode ser desfeita.</p>
+        <label for="conta-senha">Confirme sua senha</label>
+        <input id="conta-senha" type="password" autocomplete="current-password">
+        <div class="erro-campo" id="erro-conta" role="alert"></div>
+        <div class="linha-botoes"><button type="button" class="perigo" id="botao-excluir">Excluir conta</button></div>
+      </div>
+    </section>
+
+    <!-- ===================== PAINEL DA EQUIPE (CT-ACE01) ===================== -->
+    <section class="tela" id="tela-equipe" aria-labelledby="t-equipe">
+      <button type="button" class="fantasma voltar" data-voltar>← Voltar</button>
+      <h1 id="t-equipe">Painel da equipe</h1>
+      <div class="chips" id="chips-status">
+        <button type="button" class="chip ativa" data-status="SOLICITADO">Novas</button>
+        <button type="button" class="chip" data-status="CONFIRMADO">Confirmadas</button>
+        <button type="button" class="chip" data-status="">Todas</button>
+      </div>
+      <ul class="lista" id="lista-equipe"></ul>
+    </section>
+
+    <p class="rodape">Em perigo agora? Ligue <a href="tel:190">190</a>. Central de Atendimento à Mulher: <a href="tel:180">180</a>.</p>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <?!= include('ui/App') ?>
+</body>
+</html>

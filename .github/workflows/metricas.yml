@@ -1,0 +1,24 @@
+# Relatório mensal de defeitos: Diagrama de Pareto por categoria (Ishikawa) e
+# por requisito, taxa de defeitos escapados para produção e tempo médio de correção.
+
+name: Métricas de defeitos (Pareto)
+
+on:
+  schedule:
+    - cron: '0 12 1 * *' # dia 1 de cada mês
+  workflow_dispatch:
+
+permissions:
+  issues: read
+  contents: read
+
+jobs:
+  pareto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const relatorio = require('./scripts/github/relatorio-defeitos.js');
+            await relatorio({ github, context, core });

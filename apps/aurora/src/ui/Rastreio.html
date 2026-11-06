@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('ui/Estilos') ?>
+</head>
+<body>
+  <main class="app">
+    <header class="topo">
+      <div class="marca">Aurora<small>Acompanhamento de alerta</small></div>
+    </header>
+
+    <section class="tela ativa" aria-live="polite">
+      <h1 id="titulo">Carregando…</h1>
+      <div class="cartao alerta-status" id="cartao" hidden>
+        <div class="estado"><span>Situação</span><span id="situacao">—</span></div>
+        <div class="estado"><span>Alerta iniciado</span><span id="inicio">—</span></div>
+        <div class="estado"><span>Última posição</span><span id="atualizacao">—</span></div>
+        <div class="estado"><span>Precisão</span><span id="precisao">—</span></div>
+      </div>
+      <iframe class="mapa" id="mapa" title="Mapa com a última posição" hidden loading="lazy" referrerpolicy="no-referrer"></iframe>
+      <a class="botao" id="abrir-mapa" href="#" target="_blank" rel="noopener" hidden>Abrir no Google Maps</a>
+
+      <div class="aviso-caixa" id="orientacao">
+        <strong>O que fazer:</strong> tente falar com ela. Se não conseguir contato ou houver risco, ligue <a href="tel:190">190</a>.
+        Central de Atendimento à Mulher: <a href="tel:180">180</a>. Não compartilhe este link.
+      </div>
+      <div class="emergencia">
+        <a href="tel:190"><strong>190</strong>Polícia</a>
+        <a href="tel:180"><strong>180</strong>Central da Mulher</a>
+        <a href="tel:192"><strong>192</strong>SAMU</a>
+      </div>
+      <p class="suave" id="rodape-atualizacao" style="margin-top:12px"></p>
+    </section>
+  </main>
+
+  <script>
+  (function () {
+    'use strict';
+    // Dentro de <script>, o scriptlet de impressão já gera um literal JS escapado
+    var TOKEN = <?= token ?>;
+    var intervaloMs = 15000;
+    var temporizador = null;
+
+    function $(id) { return document.getElementById(id); }
+    function hora(iso) {
+      var d = new Date(iso);
+      return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function render(r) {
+      intervaloMs = (r.intervaloAtualizacaoSeg || 15) * 1000;
+      $('cartao').hidden = false;
+      $('inicio').textContent = hora(r.inicio);
+      if (r.status === 'ATIVO') {
+        $('titulo').textContent = r.primeiroNome + ' pediu ajuda';
+        $('situacao').textContent = 'Alerta ativo';
+        $('situacao').className = 'falha';
+      } else {
+        $('titulo').textContent = r.status === 'ENCERRADO' ? r.primeiroNome + ' encerrou o alerta' : 'Este alerta expirou';
+        $('situacao').textContent = r.status === 'ENCERRADO' ? 'Encerrado pela usuária' : 'Expirado';
+        $('situacao').className = 'ok';
+      }
+      if (r.lat !== undefined) {
+        $('atualizacao').textContent = hora(r.ultimaAtualizacao);
+        $('precisao').textContent = r.precisao ? '± ' + r.precisao + ' m' : '—';
+        var src = 'https://maps.google.com/maps?q=' + r.lat + ',' + r.lng + '&z=16&output=embed';
+        if ($('mapa').getAttribute('src') !== src) $('mapa').setAttribute('src', src);
+        $('mapa').hidden = false;
+        $('abrir-mapa').href = r.linkMapa;
+        $('abrir-mapa').hidden = false;
+      } else {
+        $('atualizacao').textContent = r.status === 'ATIVO' ? 'Aguardando GPS…' : '—';
+        $('precisao').textContent = '—';
+        $('mapa').hidden = true;
+        $('mapa').removeAttribute('src');
+        $('abrir-mapa').hidden = true;
+      }
+      $('rodape-atualizacao').textContent = r.status === 'ATIVO'
+        ? 'Esta página se atualiza sozinha a cada ' + Math.round(intervaloMs / 1000) + ' segundos.'
+        : 'A localização não é mais compartilhada.';
+      return r.status === 'ATIVO';
+    }
+
+    function erro(msg) {
+      $('titulo').textContent = msg || 'Não foi possível carregar o acompanhamento.';
+    }
+
+    function consultar() {
+      google.script.run
+        .withSuccessHandler(function (r) {
+          if (!r || !r.ok) { erro(r && r.mensagem); return; }
+          if (render(r.dados)) temporizador = setTimeout(consultar, intervaloMs);
+        })
+        .withFailureHandler(function () {
+          $('rodape-atualizacao').textContent = 'Sem conexão. Tentando novamente…';
+          temporizador = setTimeout(consultar, intervaloMs);
+        })
+        .api_rastreio(TOKEN);
+    }
+
+    if (!TOKEN) erro('Link de acompanhamento inválido.');
+    else consultar();
+  })();
+  </script>
+</body>
+</html>

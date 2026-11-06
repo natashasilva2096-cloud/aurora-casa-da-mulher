@@ -1,0 +1,147 @@
+name: Defeito
+description: Registrar uma falha (bug) para triagem GUT e análise de causa raiz
+title: "[Defeito] "
+labels: [defeito]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Nunca coloque dados reais de usuárias** (nomes, telefones, endereços, localização) nesta issue — o repositório é público.
+        A prioridade é calculada automaticamente pela Matriz GUT a partir das notas abaixo.
+  - type: textarea
+    id: descricao
+    attributes:
+      label: Descrição
+      description: O que aconteceu? (falha observada)
+    validations:
+      required: true
+  - type: textarea
+    id: passos
+    attributes:
+      label: Passos para reproduzir
+      placeholder: |
+        1. Entrar com uma conta de teste
+        2. Segurar o botão de pânico por 2 s
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Resultado esperado x obtido
+  - type: dropdown
+    id: requisito
+    attributes:
+      label: Requisito afetado
+      options:
+        - RF01 — Cadastro da usuária
+        - RF02 — Contatos de emergência
+        - RF03 — Botão de pânico
+        - RF04 — Localização em tempo real
+        - RF05 — Rotas seguras
+        - RF06 — Pontos seguros
+        - RF07 — Agendamento psicossocial
+        - RF08 — Atendimento jurídico (NUDEM)
+        - RNF01 — Segurança
+        - RNF02 — Privacidade
+        - RNF03 — Usabilidade (botão de pânico)
+        - RNF04 — Disponibilidade das funções de emergência
+        - RNF05 — Desempenho
+        - RNF06 — Confiabilidade
+        - RNF07 — Manutenibilidade
+        - RNF08 — Portabilidade
+        - ABRIGO — Rede de acolhimento
+        - CI/CD — Pipeline ou rotina
+    validations:
+      required: true
+  - type: dropdown
+    id: onde
+    attributes:
+      label: Onde foi encontrado
+      description: Usado para medir a taxa de defeitos escapados para produção
+      options:
+        - Testes automatizados (CI)
+        - Rotina diária (CI)
+        - Teste exploratório
+        - Staging
+        - Homologação (CT-ACE)
+        - Produção
+    validations:
+      required: true
+  - type: dropdown
+    id: gravidade
+    attributes:
+      label: Gravidade (G)
+      description: Impacto se nada for feito
+      options:
+        - 1 — Sem gravidade
+        - 2 — Pouco grave
+        - 3 — Grave
+        - 4 — Muito grave
+        - "5 — Extremamente grave (ex.: alerta de pânico não é enviado)"
+    validations:
+      required: true
+  - type: dropdown
+    id: urgencia
+    attributes:
+      label: Urgência (U)
+      description: Prazo para agir
+      options:
+        - 1 — Pode esperar
+        - 2 — Pouco urgente
+        - 3 — O mais rápido possível
+        - 4 — É urgente
+        - 5 — Ação imediata
+    validations:
+      required: true
+  - type: dropdown
+    id: tendencia
+    attributes:
+      label: Tendência (T)
+      description: Como o problema evolui se nada for feito
+      options:
+        - 1 — Não vai piorar
+        - 2 — Vai piorar a longo prazo
+        - 3 — Vai piorar a médio prazo
+        - 4 — Vai piorar a curto prazo
+        - 5 — Vai piorar rapidamente
+    validations:
+      required: true
+  - type: dropdown
+    id: ishikawa
+    attributes:
+      label: Categoria da causa (Ishikawa)
+      description: Preencha após a análise. Alimenta o Diagrama de Pareto mensal.
+      options:
+        - Método — processo, requisito ou regra de negócio
+        - Máquina — infraestrutura, Apps Script, cotas
+        - Material — dados, planilha, cadastro de pontos
+        - Mão de obra — conhecimento, revisão
+        - Medição — testes/monitoramento que deixaram passar
+        - Meio ambiente — integrações externas (Maps, e-mail, navegador, GPS)
+  - type: textarea
+    id: porques
+    attributes:
+      label: Análise de causa raiz — 5 Porquês
+      value: |
+        1. Por que falhou? (sintoma)
+        2. Por quê?
+        3. Por quê?
+        4. Por quê?
+        5. Por quê? (causa raiz)
+  - type: textarea
+    id: plano
+    attributes:
+      label: Plano de ação (5W2H)
+      value: |
+        | O quê | Por quê | Onde | Quando | Quem | Como | Quanto |
+        |---|---|---|---|---|---|---|
+        |  |  |  |  |  |  |  |
+  - type: checkboxes
+    id: confirmacao
+    attributes:
+      label: Fechamento (PDCA — Check/Act)
+      options:
+        - label: Existe teste automatizado que reproduzia o defeito e agora passa (teste de confirmação)
+        - label: A regressão completa passou e o smoke de staging está verde
+        - label: A efetividade da ação foi avaliada

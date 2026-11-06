@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('ui/Estilos') ?>
+</head>
+<body>
+  <main class="app">
+    <header class="topo">
+      <div class="marca">Aurora Abrigo<small>Rede de acolhimento solidário · Casa da Mulher</small></div>
+    </header>
+
+    <section class="tela ativa" id="tela-cadastro" aria-labelledby="t-cad">
+      <h1 id="t-cad">Ofereça um lugar seguro, por um tempo</h1>
+      <p class="suave">
+        Mulheres em situação de violência muitas vezes não têm para onde ir enquanto resolvem medida protetiva,
+        boletim de ocorrência e auxílio financeiro. Você pode oferecer hospedagem temporária, com o apoio da Casa da Mulher.
+      </p>
+      <div class="info-caixa">
+        <strong>Como funciona:</strong> 1) você se cadastra; 2) a equipe e o órgão público verificam o cadastro;
+        3) você faz a capacitação; 4) a equipe entra em contato quando houver uma hóspede compatível.
+        <strong>Seu endereço nunca é mostrado no aplicativo</strong> — só a equipe tem acesso.
+      </div>
+
+      <form id="form-anfitriao" class="cartao" novalidate>
+        <label for="a-nome">Nome completo</label>
+        <input id="a-nome" name="nome" autocomplete="name">
+        <div class="erro-campo" data-erro="nome"></div>
+        <label for="a-email">E-mail</label>
+        <input id="a-email" name="email" type="email" autocomplete="email">
+        <div class="erro-campo" data-erro="email"></div>
+        <label for="a-telefone">Telefone com DDD</label>
+        <input id="a-telefone" name="telefone" type="tel" inputmode="tel">
+        <div class="erro-campo" data-erro="telefone"></div>
+        <label for="a-bairro">Bairro</label>
+        <input id="a-bairro" name="bairro">
+        <div class="erro-campo" data-erro="bairro"></div>
+        <label for="a-endereco">Endereço completo (sigiloso)</label>
+        <input id="a-endereco" name="endereco" autocomplete="street-address">
+        <div class="erro-campo" data-erro="endereco"></div>
+
+        <label for="a-pessoas">Quantas pessoas pode receber (incluindo a mulher)?</label>
+        <input id="a-pessoas" name="maxPessoas" type="number" min="1" max="6" value="1" data-num>
+        <div class="erro-campo" data-erro="maxPessoas"></div>
+
+        <label class="check" for="a-filhos"><input id="a-filhos" name="aceitaFilhos" type="checkbox"><span>Posso receber também os filhos</span></label>
+        <div class="erro-campo" data-erro="aceitaFilhos"></div>
+        <div id="bloco-filhos" hidden>
+          <label for="a-max-filhos">Até quantas crianças?</label>
+          <input id="a-max-filhos" name="maxFilhos" type="number" min="1" max="5" value="1" data-num>
+          <div class="erro-campo" data-erro="maxFilhos"></div>
+        </div>
+
+        <label for="a-dias">Por até quantos dias?</label>
+        <input id="a-dias" name="duracaoMaxDias" type="number" min="1" max="90" value="15" data-num>
+        <div class="erro-campo" data-erro="duracaoMaxDias"></div>
+
+        <label class="check" for="a-acessivel"><input id="a-acessivel" name="acessivel" type="checkbox"><span>A casa tem acessibilidade para pessoa com deficiência</span></label>
+
+        <label for="a-obs">Observações (opcional)</label>
+        <textarea id="a-obs" name="observacoes" maxlength="500" placeholder="Ex.: tem animais, escada, quarto separado..."></textarea>
+        <div class="erro-campo" data-erro="observacoes"></div>
+
+        <label class="check" for="a-sigilo"><input id="a-sigilo" name="termoSigilo" type="checkbox"><span>Comprometo-me a manter sigilo absoluto sobre a hóspede e sua permanência.</span></label>
+        <div class="erro-campo" data-erro="termoSigilo"></div>
+        <label class="check" for="a-consent"><input id="a-consent" name="consentimento" type="checkbox"><span>Autorizo a verificação do meu cadastro pela Casa da Mulher e por órgão público, e o uso dos meus dados apenas para este programa (LGPD).</span></label>
+        <div class="erro-campo" data-erro="consentimento"></div>
+
+        <div class="erro-campo" id="erro-geral" role="alert"></div>
+        <div class="linha-botoes"><button type="submit">Enviar cadastro</button></div>
+      </form>
+
+      <div class="cartao" id="sucesso" hidden>
+        <h2 style="margin-top:0">Cadastro recebido</h2>
+        <p>Seu protocolo é <strong id="protocolo"></strong>. Guarde este número.</p>
+        <p class="suave">A equipe entrará em contato para a verificação e a capacitação.</p>
+      </div>
+
+      <h2>Capacitação obrigatória</h2>
+      <ul class="lista" id="modulos"></ul>
+
+      <h2>Acompanhar meu cadastro</h2>
+      <form id="form-status" class="cartao" novalidate>
+        <label for="s-protocolo">Protocolo</label>
+        <input id="s-protocolo" name="protocolo" placeholder="AB-AAAAMMDD-XXXX">
+        <label for="s-email">E-mail</label>
+        <input id="s-email" name="email" type="email">
+        <div class="erro-campo" id="status-resultado" role="status"></div>
+        <div class="linha-botoes"><button type="submit" class="secundario">Consultar</button></div>
+      </form>
+    </section>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+  (function () {
+    'use strict';
+    var STATUS = {
+      PENDENTE: 'Recebido — aguardando análise',
+      EM_ANALISE: 'Em análise pela equipe e pelo órgão público',
+      VALIDADO: 'Validado',
+      RECUSADO: 'Não aprovado',
+      SUSPENSO: 'Suspenso temporariamente',
+      DESLIGADO: 'Desligado do programa',
+    };
+    function $(s, r) { return (r || document).querySelector(s); }
+    function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+    function api(fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return new Promise(function (ok, falha) {
+        var run = google.script.run
+          .withSuccessHandler(function (r) { r && r.ok ? ok(r.dados) : falha(r || { mensagem: 'Erro inesperado.' }); })
+          .withFailureHandler(function () { falha({ mensagem: 'Sem conexão. Tente novamente.' }); });
+        run[fn].apply(run, args);
+      });
+    }
+    function lerForm(f) {
+      var o = {};
+      $$('input, textarea', f).forEach(function (el) {
+        if (!el.name) return;
+        o[el.name] = el.type === 'checkbox' ? el.checked : el.hasAttribute('data-num') ? (el.value === '' ? '' : Number(el.value)) : el.value;
+      });
+      return o;
+    }
+
+    $('#a-filhos').addEventListener('change', function (e) { $('#bloco-filhos').hidden = !e.target.checked; });
+
+    $('#form-anfitriao').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = ev.currentTarget;
+      var b = $('button[type=submit]', f);
+      $$('[data-erro]', f).forEach(function (el) { el.textContent = ''; });
+      $('#erro-geral').textContent = '';
+      b.disabled = true;
+      api('api_cadastrarAnfitriao', lerForm(f)).then(function (r) {
+        f.hidden = true;
+        $('#protocolo').textContent = r.protocolo;
+        $('#sucesso').hidden = false;
+        $('#s-protocolo').value = r.protocolo;
+        window.scrollTo(0, 0);
+      }).catch(function (e) {
+        b.disabled = false;
+        var d = e.detalhes || {};
+        Object.keys(d).forEach(function (k) { var el = $('[data-erro="' + k + '"]', f); if (el) el.textContent = d[k]; });
+        $('#erro-geral').textContent = e.mensagem;
+      });
+    });
+
+    $('#form-status').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var d = lerForm(ev.currentTarget);
+      var out = $('#status-resultado');
+      out.textContent = 'Consultando…';
+      api('api_consultarStatus', d.protocolo, d.email).then(function (r) {
+        out.className = 'ok';
+        out.textContent = STATUS[r.status] + (r.capacitacaoConcluida ? ' · capacitação concluída' : '');
+      }).catch(function (e) { out.className = 'erro-campo'; out.textContent = e.mensagem; });
+    });
+
+    api('api_infoPrograma').then(function (info) {
+      var ul = $('#modulos');
+      info.modulos.forEach(function (m) {
+        var li = document.createElement('li');
+        li.className = 'item';
+        var h = document.createElement('h3');
+        h.textContent = m.titulo;
+        var p = document.createElement('div');
+        p.className = 'meta';
+        p.textContent = m.resumo;
+        li.appendChild(h);
+        li.appendChild(p);
+        ul.appendChild(li);
+      });
+    }).catch(function () {});
+  })();
+  </script>
+</body>
+</html>

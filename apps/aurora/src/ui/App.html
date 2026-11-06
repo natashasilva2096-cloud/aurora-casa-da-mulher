@@ -1,0 +1,822 @@
+<script>
+(function () {
+  'use strict';
+
+  var SEGURAR_MS = 2000; // RNF03 / CT-ACE02: evita acionamento acidental
+  var TIPOS_PONTO = {
+    CASA_DA_MULHER: 'Casa da Mulher',
+    DEAM: 'Delegacia',
+    NUDEM: 'Defensoria',
+    CRAM: 'Psicossocial',
+    CASA_ACOLHIMENTO: 'Acolhimento',
+    UNIDADE_SAUDE: 'Saúde',
+  };
+  var EMERGENCIA = [
+    { numero: '190', descricao: 'Polícia' },
+    { numero: '180', descricao: 'Central da Mulher' },
+    { numero: '192', descricao: 'SAMU' },
+  ];
+
+  var estado = {
+    token: null,
+    usuaria: null,
+    alerta: null,
+    coord: null,
+    coordEm: 0,
+    watchId: null,
+    ultimoEnvioLocal: 0,
+    historico: [],
+    tela: null,
+    filtroTipo: null,
+    rota: { pontoId: null, modo: 'WALKING' },
+    statusEquipe: 'SOLICITADO',
+    contatos: [],
+  };
+
+  // ---------------------------------------------------------------- utilidades
+  function $(s, raiz) { return (raiz || document).querySelector(s); }
+  function $$(s, raiz) { return Array.prototype.slice.call((raiz || document).querySelectorAll(s)); }
+
+  /** Cria elementos sem innerHTML com dados (evita XSS). */
+  function h(tag, attrs, filhos) {
+    var el = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k === 'texto') el.textContent = v;
+      else if (k.indexOf('on') === 0) el.addEventListener(k.substring(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    });
+    (filhos || []).forEach(function (f) {
+      if (f === null || f === undefined || f === false) return;
+      el.appendChild(typeof f === 'string' ? document.createTextNode(f) : f);
+    });
+    return el;
+  }
+
+  function limpar(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+
+  function guardar(k, v) {
+    try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { /* armazenamento indisponível */ }
+  }
+  function ler(k) {
+    try { return sessionStorage.getItem(k); } catch (e) { return null; }
+  }
+
+  var temporizadorToast = null;
+  function toast(msg) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('visivel');
+    clearTimeout(temporizadorToast);
+    temporizadorToast = setTimeout(function () { t.classList.remove('visivel'); }, 3500);
+  }
+
+  function hora(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+  function dataBr(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+    return m ? m[3] + '/' + m[2] + '/' + m[1] : '';
+  }
+
+  // ---------------------------------------------------------------- servidor
+  function api(fn) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolver, rejeitar) {
+      var runner = google.script.run
+        .withSuccessHandler(function (r) {
+          if (r && r.ok) return resolver(r.dados);
+          var e = r || { codigo: 'ERRO', mensagem: 'Erro inesperado.' };
+          if (e.codigo === 'SESSAO_INVALIDA') sessaoExpirada();
+          rejeitar(e);
+        })
+        .withFailureHandler(function () {
+          rejeitar({ codigo: 'FALHA_CONEXAO', mensagem: 'Sem conexão com o servidor. Verifique sua internet.' });
+        });
+      runner[fn].apply(runner, args);
+    });
+  }
+
+  /** Repete apenas falhas de conexão (RNF06). */
+  function comRetentativa(fnChamada, tentativas, esperaMs) {
+    return fnChamada().catch(function (e) {
+      if (e.codigo !== 'FALHA_CONEXAO' || tentativas <= 1) throw e;
+      return new Promise(function (r) { setTimeout(r, esperaMs); }).then(function () {
+        return comRetentativa(fnChamada, tentativas - 1, esperaMs * 2);
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------- navegação
+  var CARREGAR = {
+    contatos: carregarContatos,
+    pontos: carregarPontos,
+    atendimento: carregarAtendimentos,
+    juridico: carregarJuridico,
+    conta: carregarConta,
+    equipe: carregarEquipe,
+    inicio: aquecerGps,
+  };
+
+  function mostrar(nome, semHistorico) {
+    $$('.tela').forEach(function (t) { t.classList.remove('ativa'); });
+    var alvo = $('#tela-' + nome);
+    if (!alvo) return;
+    alvo.classList.add('ativa');
+    if (!semHistorico && estado.tela && estado.tela !== nome) estado.historico.push(estado.tela);
+    estado.tela = nome;
+    window.scrollTo(0, 0);
+    var h1 = $('h1', alvo);
+    if (h1) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }
+    if (CARREGAR[nome]) CARREGAR[nome]();
+  }
+
+  function voltar() {
+    var anterior = estado.historico.pop();
+    if (estado.alerta) return mostrar('alerta', true);
+    mostrar(anterior || (estado.token ? 'inicio' : 'entrada'), true);
+  }
+
+  function telaInicial() {
+    estado.historico = [];
+    mostrar(estado.alerta ? 'alerta' : estado.token ? 'inicio' : 'entrada', true);
+  }
+
+  // ---------------------------------------------------------------- formulários
+  function lerForm(form) {
+    var o = {};
+    $$('input, select, textarea', form).forEach(function (el) {
+      if (!el.name) return;
+      o[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+    });
+    return o;
+  }
+
+  function limparErros(form) {
+    $$('[data-erro]', form).forEach(function (el) { el.textContent = ''; });
+    $$('.campo-invalido', form).forEach(function (el) { el.classList.remove('campo-invalido'); el.removeAttribute('aria-invalid'); });
+  }
+
+  function mostrarErros(form, e, alvoGeral) {
+    limparErros(form);
+    var detalhes = (e && e.detalhes) || {};
+    Object.keys(detalhes).forEach(function (campo) {
+      var msg = $('[data-erro="' + campo + '"]', form);
+      if (msg) msg.textContent = detalhes[campo];
+      var input = $('[name="' + campo + '"]', form);
+      if (input) { input.classList.add('campo-invalido'); input.setAttribute('aria-invalid', 'true'); }
+    });
+    if (alvoGeral) $(alvoGeral).textContent = (e && e.mensagem) || 'Não foi possível concluir.';
+  }
+
+  function ocupado(botao, sim, texto) {
+    if (!botao) return;
+    if (sim) { botao.dataset.textoOriginal = botao.textContent; botao.textContent = texto || 'Aguarde…'; botao.disabled = true; }
+    else { botao.textContent = botao.dataset.textoOriginal || botao.textContent; botao.disabled = false; }
+  }
+
+  // ---------------------------------------------------------------- geolocalização
+  function coordDe(pos) {
+    return { lat: pos.coords.latitude, lng: pos.coords.longitude, precisao: Math.round(pos.coords.accuracy || 0) };
+  }
+
+  /** Resolve com a coordenada ou null (nunca rejeita: falta de GPS não pode travar o alerta). */
+  function obterLocalizacao(timeoutMs) {
+    return new Promise(function (resolver) {
+      if (!navigator.geolocation) return resolver(null);
+      var feito = false;
+      var limite = setTimeout(function () { if (!feito) { feito = true; resolver(estado.coord); } }, timeoutMs);
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          estado.coord = coordDe(pos);
+          estado.coordEm = Date.now();
+          if (!feito) { feito = true; clearTimeout(limite); resolver(estado.coord); }
+        },
+        function () { if (!feito) { feito = true; clearTimeout(limite); resolver(estado.coord); } },
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+      );
+    });
+  }
+
+  /** Pede a localização ao entrar na tela inicial para o alerta sair mais rápido (RNF05). */
+  function aquecerGps() {
+    if (!estado.coord || Date.now() - estado.coordEm > 60000) obterLocalizacao(8000);
+  }
+
+  function iniciarCompartilhamento() {
+    if (!navigator.geolocation || estado.watchId !== null) return;
+    estado.watchId = navigator.geolocation.watchPosition(
+      function (pos) {
+        estado.coord = coordDe(pos);
+        estado.coordEm = Date.now();
+        enviarLocalizacaoSePreciso();
+      },
+      function () { atualizarTextoLocal(); },
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+    );
+  }
+
+  function pararCompartilhamento() {
+    if (estado.watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(estado.watchId);
+    estado.watchId = null;
+  }
+
+  function enviarLocalizacaoSePreciso() {
+    var a = estado.alerta;
+    if (!a || !estado.coord) return;
+    var intervalo = (a.intervaloAtualizacaoSeg || 15) * 1000;
+    if (Date.now() - estado.ultimoEnvioLocal < intervalo) return;
+    estado.ultimoEnvioLocal = Date.now();
+    api('api_atualizarLocalizacao', estado.token, a.acionamentoId, estado.coord)
+      .then(function (s) { mesclarAlerta(s); })
+      .catch(function (e) {
+        if (e.codigo === 'ALERTA_INATIVO') { encerrarLocalmente(); toast('O alerta foi encerrado.'); }
+      });
+  }
+
+  // ---------------------------------------------------------------- sessão
+  function aoEntrar(dados) {
+    estado.token = dados.token;
+    estado.usuaria = dados.usuaria;
+    guardar('aurora_token', dados.token);
+    renderUsuaria();
+    verificarContatos();
+    telaInicial();
+  }
+
+  function renderUsuaria() {
+    var u = estado.usuaria || {};
+    $$('[data-nome]').forEach(function (el) { el.textContent = (u.nome || '').split(' ')[0]; });
+    $('#atalho-equipe').hidden = ['EQUIPE_PSICOSSOCIAL', 'EQUIPE_JURIDICA', 'ADMIN'].indexOf(u.perfil) === -1;
+  }
+
+  function verificarContatos() {
+    api('api_listarContatos', estado.token).then(function (lista) {
+      estado.contatos = lista;
+      $('#aviso-sem-contatos').hidden = lista.length > 0;
+    }).catch(function () {});
+  }
+
+  function sessaoExpirada() {
+    if (!estado.token) return;
+    estado.token = null;
+    estado.usuaria = null;
+    guardar('aurora_token', null);
+    if (!estado.alerta) { toast('Sua sessão expirou. Entre novamente.'); telaInicial(); }
+  }
+
+  function sair() {
+    var t = estado.token;
+    estado.token = null;
+    estado.usuaria = null;
+    guardar('aurora_token', null);
+    if (t) api('api_sair', t).catch(function () {});
+    telaInicial();
+  }
+
+  // ---------------------------------------------------------------- botão de pânico (RF03)
+  function configurarPanico() {
+    var botao = $('#botao-panico');
+    var circulo = $('circle', botao);
+    var total = 704;
+    var inicio = 0;
+    var quadro = null;
+    var disparado = false;
+
+    function desenhar() {
+      var p = Math.min(1, (Date.now() - inicio) / SEGURAR_MS);
+      circulo.style.strokeDashoffset = String(total * (1 - p));
+      if (p >= 1) {
+        cancelar(true);
+        if (!disparado) { disparado = true; acionarPanico(); }
+        return;
+      }
+      quadro = requestAnimationFrame(desenhar);
+    }
+    function comecar(ev) {
+      if (ev) ev.preventDefault();
+      if (quadro) return;
+      disparado = false;
+      inicio = Date.now();
+      botao.classList.add('segurando');
+      if (navigator.vibrate) navigator.vibrate(30);
+      quadro = requestAnimationFrame(desenhar);
+    }
+    function cancelar(concluiu) {
+      if (quadro) cancelAnimationFrame(quadro);
+      quadro = null;
+      botao.classList.remove('segurando');
+      circulo.style.strokeDashoffset = String(total);
+      if (concluiu !== true && inicio && Date.now() - inicio < SEGURAR_MS && Date.now() - inicio > 150) {
+        toast('Continue segurando por 2 segundos para pedir ajuda.');
+      }
+      inicio = 0;
+    }
+
+    botao.addEventListener('pointerdown', comecar);
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { botao.addEventListener(ev, cancelar); });
+    botao.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    botao.addEventListener('keydown', function (e) {
+      if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) comecar(e);
+    });
+    botao.addEventListener('keyup', function (e) {
+      if (e.key === ' ' || e.key === 'Enter') cancelar();
+    });
+  }
+
+  function acionarPanico() {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    estado.alerta = { acionamentoId: null, status: 'ENVIANDO' };
+    renderAlertaEnviando();
+    mostrar('alerta', true);
+
+    // Usa a posição recente, se houver; senão espera no máximo 4 s pelo GPS
+    var recente = estado.coord && Date.now() - estado.coordEm < 60000;
+    var coordPromessa = recente ? Promise.resolve(estado.coord) : obterLocalizacao(4000);
+
+    coordPromessa.then(function (coord) {
+      return comRetentativa(function () { return api('api_acionarPanico', estado.token, coord); }, 3, 1500);
+    }).then(function (s) {
+      estado.ultimoEnvioLocal = Date.now();
+      mesclarAlerta(s);
+      iniciarCompartilhamento();
+    }).catch(function (e) {
+      renderFalhaAlerta(e);
+    });
+  }
+
+  function mesclarAlerta(s) {
+    if (!s) return;
+    var anterior = estado.alerta || {};
+    estado.alerta = Object.assign({}, anterior, s);
+    if (s.status !== 'ATIVO') { encerrarLocalmente(); return; }
+    renderAlerta();
+  }
+
+  function renderAlertaEnviando() {
+    $('#al-envio').textContent = 'Enviando…';
+    $('#al-envio').className = 'atencao';
+    $('#al-local').textContent = 'Obtendo…';
+    $('#al-atualizacao').textContent = '—';
+    $('#al-aviso').hidden = true;
+    $('#al-ponto').hidden = true;
+    $('#botao-encerrar').dataset.confirmar = '';
+    $('#botao-encerrar').textContent = 'Estou segura — encerrar alerta';
+  }
+
+  function renderAlerta() {
+    var a = estado.alerta;
+    var envio = $('#al-envio');
+    var aviso = $('#al-aviso');
+    aviso.hidden = true;
+    if (a.situacaoEnvio === 'SEM_CONTATOS' || a.totalContatos === 0) {
+      envio.textContent = 'Nenhum contato cadastrado';
+      envio.className = 'falha';
+      aviso.hidden = false;
+      aviso.textContent = 'Nenhum contato foi avisado. Ligue 190 se estiver em perigo.';
+    } else if (a.situacaoEnvio === 'FALHOU') {
+      envio.textContent = 'Falha no envio';
+      envio.className = 'falha';
+      aviso.hidden = false;
+      aviso.textContent = 'Não conseguimos avisar seus contatos. Ligue 190 se estiver em perigo.';
+    } else {
+      envio.textContent = (a.enviados || 0) + (a.falhas ? ' de ' + (a.enviados + a.falhas) : '') + ' avisado(s)';
+      envio.className = a.falhas ? 'atencao' : 'ok';
+    }
+    atualizarTextoLocal();
+    $('#al-atualizacao').textContent = hora(a.ultimaAtualizacao || a.inicio);
+    if (a.pontoMaisProximo) {
+      $('#al-ponto').hidden = false;
+      $('#al-ponto-nome').textContent = a.pontoMaisProximo.nome;
+      $('#al-ponto-endereco').textContent = a.pontoMaisProximo.endereco + (a.pontoMaisProximo.distanciaTexto ? ' · ' + a.pontoMaisProximo.distanciaTexto : '');
+    }
+  }
+
+  function atualizarTextoLocal() {
+    var a = estado.alerta;
+    var el = $('#al-local');
+    if (!a) return;
+    if (estado.watchId !== null && estado.coord) { el.textContent = 'Compartilhando'; el.className = 'ok'; }
+    else if (a.temLocalizacao) { el.textContent = 'Última posição enviada'; el.className = 'atencao'; }
+    else { el.textContent = 'Indisponível — ative o GPS'; el.className = 'falha'; }
+  }
+
+  function renderFalhaAlerta(e) {
+    var envio = $('#al-envio');
+    envio.textContent = 'Não enviado';
+    envio.className = 'falha';
+    var aviso = $('#al-aviso');
+    aviso.hidden = false;
+    limpar(aviso).appendChild(h('div', {}, [
+      h('strong', { texto: 'Não foi possível enviar o alerta. ' }),
+      (e && e.mensagem) || '',
+      h('div', { class: 'linha-botoes' }, [
+        h('a', { class: 'botao perigo', href: 'tel:190', texto: 'Ligar 190 agora' }),
+        h('button', { type: 'button', class: 'secundario', texto: 'Tentar de novo', onclick: acionarPanico }),
+      ]),
+    ]));
+    if (!estado.alerta || !estado.alerta.acionamentoId) estado.alerta = null;
+  }
+
+  function encerrarLocalmente() {
+    pararCompartilhamento();
+    estado.alerta = null;
+    telaInicial();
+  }
+
+  function encerrarAlerta() {
+    var botao = $('#botao-encerrar');
+    var a = estado.alerta;
+    if (!a || !a.acionamentoId) { encerrarLocalmente(); return; }
+    if (botao.dataset.confirmar !== 'sim') {
+      botao.dataset.confirmar = 'sim';
+      botao.textContent = 'Toque de novo para confirmar';
+      setTimeout(function () { botao.dataset.confirmar = ''; botao.textContent = 'Estou segura — encerrar alerta'; }, 4000);
+      return;
+    }
+    ocupado(botao, true, 'Encerrando…');
+    api('api_encerrarAlerta', estado.token, a.acionamentoId).then(function () {
+      ocupado(botao, false);
+      toast('Alerta encerrado. Seus contatos foram avisados de que você está em segurança.');
+      encerrarLocalmente();
+    }).catch(function (e) {
+      ocupado(botao, false);
+      if (e.codigo === 'ALERTA_INATIVO') encerrarLocalmente();
+      else toast(e.mensagem);
+    });
+  }
+
+  // ---------------------------------------------------------------- contatos (RF02)
+  function carregarContatos() {
+    var ul = limpar($('#lista-contatos'));
+    ul.appendChild(h('li', { class: 'carregando', texto: 'Carregando…' }));
+    api('api_listarContatos', estado.token).then(function (lista) {
+      estado.contatos = lista;
+      $('#aviso-sem-contatos').hidden = lista.length > 0;
+      limpar(ul);
+      if (!lista.length) ul.appendChild(h('li', { class: 'suave', texto: 'Nenhum contato ainda.' }));
+      lista.forEach(function (c) {
+        ul.appendChild(h('li', { class: 'item' }, [
+          h('h3', { texto: c.nome }),
+          h('div', { class: 'meta', texto: [c.relacao, c.email, c.telefone].filter(Boolean).join(' · ') }),
+          h('div', { class: 'acoes' }, [
+            h('button', { type: 'button', class: 'secundario', texto: 'Editar', onclick: function () { editarContato(c); } }),
+            h('button', { type: 'button', class: 'secundario', texto: 'Remover', onclick: function (ev) { removerContato(c, ev.currentTarget); } }),
+          ]),
+        ]));
+      });
+      $('#form-contato').hidden = lista.length >= 5;
+    }).catch(function (e) { limpar(ul).appendChild(h('li', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  function editarContato(c) {
+    var f = $('#form-contato');
+    f.hidden = false;
+    limparErros(f);
+    ['id', 'nome', 'email', 'telefone', 'relacao'].forEach(function (k) { $('[name="' + k + '"]', f).value = c[k] || ''; });
+    $('#form-contato-titulo').textContent = 'Editar contato';
+    $('#ct-cancelar').hidden = false;
+    $('#ct-nome').focus();
+  }
+
+  function resetarFormContato() {
+    var f = $('#form-contato');
+    f.reset();
+    $('[name="id"]', f).value = '';
+    limparErros(f);
+    $('#erro-contato').textContent = '';
+    $('#form-contato-titulo').textContent = 'Adicionar contato';
+    $('#ct-cancelar').hidden = true;
+  }
+
+  function removerContato(c, botao) {
+    if (botao.dataset.confirmar !== 'sim') {
+      botao.dataset.confirmar = 'sim';
+      botao.textContent = 'Confirmar';
+      return;
+    }
+    ocupado(botao, true);
+    api('api_removerContato', estado.token, c.id).then(function () { toast('Contato removido.'); carregarContatos(); })
+      .catch(function (e) { ocupado(botao, false); toast(e.mensagem); });
+  }
+
+  // ---------------------------------------------------------------- pontos seguros (RF06)
+  function renderChipsTipos() {
+    var box = limpar($('#chips-tipos'));
+    [{ id: null, nome: 'Todos' }].concat(Object.keys(TIPOS_PONTO).map(function (k) { return { id: k, nome: TIPOS_PONTO[k] }; }))
+      .forEach(function (t) {
+        box.appendChild(h('button', {
+          type: 'button',
+          class: 'chip' + (estado.filtroTipo === t.id ? ' ativa' : ''),
+          texto: t.nome,
+          'aria-pressed': estado.filtroTipo === t.id ? 'true' : 'false',
+          onclick: function () { estado.filtroTipo = t.id; renderChipsTipos(); carregarPontos(); },
+        }));
+      });
+  }
+
+  function carregarPontos() {
+    renderChipsTipos();
+    var ul = limpar($('#lista-pontos'));
+    ul.appendChild(h('li', { class: 'carregando', texto: 'Buscando locais…' }));
+    obterLocalizacao(6000).then(function (coord) {
+      return api('api_pontosProximos', coord, estado.filtroTipo ? [estado.filtroTipo] : null);
+    }).then(function (r) {
+      $('#pontos-sem-gps').hidden = r.comDistancia;
+      limpar(ul);
+      if (!r.pontos.length) ul.appendChild(h('li', { class: 'suave', texto: 'Nenhum local deste tipo cadastrado.' }));
+      r.pontos.forEach(function (p) {
+        ul.appendChild(h('li', { class: 'item' }, [
+          h('span', { class: 'selo', texto: TIPOS_PONTO[p.tipo] || p.tipo }),
+          h('h3', { style: 'margin-top:6px', texto: p.nome }),
+          h('div', { class: 'meta', texto: p.endereco + (p.distanciaTexto ? ' · ' + p.distanciaTexto : '') }),
+          p.horario ? h('div', { class: 'meta', texto: p.horario }) : null,
+          h('div', { class: 'acoes' }, [
+            h('button', { type: 'button', texto: 'Ver rota', onclick: function () { abrirRota(p.id); } }),
+            p.telefone ? h('a', { class: 'botao secundario', href: 'tel:' + p.telefone.replace(/\D/g, ''), texto: 'Ligar' }) : null,
+          ]),
+        ]));
+      });
+    }).catch(function (e) { limpar(ul).appendChild(h('li', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  // ---------------------------------------------------------------- rota (RF05)
+  function abrirRota(pontoId) {
+    estado.rota.pontoId = pontoId;
+    mostrar('rota');
+    carregarRota();
+  }
+
+  function carregarRota() {
+    $$('#chips-modo .chip').forEach(function (c) { c.classList.toggle('ativa', c.dataset.modo === estado.rota.modo); });
+    var passos = limpar($('#rota-passos'));
+    passos.appendChild(h('li', { class: 'suave', texto: 'Calculando rota…' }));
+    $('#rota-distancia').textContent = '—';
+    $('#rota-tempo').textContent = '—';
+    obterLocalizacao(6000).then(function (coord) {
+      return api('api_rotaSegura', coord, estado.rota.pontoId, estado.rota.modo);
+    }).then(function (r) {
+      $('#rota-destino').textContent = r.destino.nome;
+      $('#rota-endereco').textContent = r.destino.endereco;
+      $('#rota-horario').textContent = r.destino.horario || '';
+      $('#rota-aviso').textContent = r.aviso + (r.mensagem ? ' ' + r.mensagem : '');
+      $('#rota-link').href = r.linkGoogleMaps;
+      var ligar = $('#rota-ligar');
+      ligar.hidden = !r.destino.telefone;
+      if (r.destino.telefone) ligar.href = 'tel:' + r.destino.telefone.replace(/\D/g, '');
+      $('#rota-distancia').textContent = r.rota ? r.rota.distanciaTexto : r.destino.distanciaTexto || '—';
+      $('#rota-tempo').textContent = r.rota ? r.rota.duracaoTexto : '—';
+      limpar(passos);
+      if (r.rota && r.rota.passos.length) r.rota.passos.forEach(function (p) { passos.appendChild(h('li', { texto: p })); });
+      else passos.appendChild(h('li', { class: 'suave', texto: 'Use o botão "Abrir no Google Maps" para navegação.' }));
+    }).catch(function (e) { limpar(passos).appendChild(h('li', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  // ---------------------------------------------------------------- atendimento (RF07 / RF08)
+  function isoLocal(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function carregarAtendimentos() {
+    var data = $('#at-data');
+    var hoje = new Date();
+    var max = new Date(hoje.getTime() + 60 * 86400000);
+    data.min = isoLocal(hoje);
+    data.max = isoLocal(max);
+    if (!data.value) {
+      var sugestao = new Date(hoje.getTime() + 86400000);
+      while (sugestao.getDay() === 0 || sugestao.getDay() === 6) sugestao = new Date(sugestao.getTime() + 86400000);
+      data.value = isoLocal(sugestao);
+    }
+    var ul = limpar($('#lista-atendimentos'));
+    ul.appendChild(h('li', { class: 'carregando', texto: 'Carregando…' }));
+    api('api_meusAtendimentos', estado.token).then(function (lista) {
+      limpar(ul);
+      if (!lista.length) ul.appendChild(h('li', { class: 'suave', texto: 'Você ainda não fez solicitações.' }));
+      lista.forEach(function (a) {
+        var podeCancelar = a.status === 'SOLICITADO' || a.status === 'CONFIRMADO';
+        ul.appendChild(h('li', { class: 'item' }, [
+          h('span', { class: 'selo ' + a.status, texto: a.status.charAt(0) + a.status.slice(1).toLowerCase() }),
+          h('h3', { style: 'margin-top:6px', texto: a.tipoDescricao }),
+          h('div', { class: 'meta', texto: 'Protocolo ' + a.protocolo + ' · ' + dataBr(a.dataPreferida) + ' · ' + a.periodoDescricao + ' · ' + a.modalidadeDescricao }),
+          podeCancelar ? h('div', { class: 'acoes' }, [
+            h('button', { type: 'button', class: 'secundario', texto: 'Cancelar solicitação', onclick: function (ev) { cancelarAtendimento(a, ev.currentTarget); } }),
+          ]) : null,
+        ]));
+      });
+    }).catch(function (e) { limpar(ul).appendChild(h('li', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  function cancelarAtendimento(a, botao) {
+    if (botao.dataset.confirmar !== 'sim') { botao.dataset.confirmar = 'sim'; botao.textContent = 'Toque de novo para cancelar'; return; }
+    ocupado(botao, true);
+    api('api_cancelarAtendimento', estado.token, a.id).then(function () { toast('Solicitação cancelada.'); carregarAtendimentos(); })
+      .catch(function (e) { ocupado(botao, false); toast(e.mensagem); });
+  }
+
+  function carregarJuridico() {
+    var box = $('#juridico-conteudo');
+    api('api_infoJuridico').then(function (j) {
+      limpar(box);
+      box.appendChild(h('h2', { style: 'margin-top:0', texto: j.titulo }));
+      box.appendChild(h('p', { texto: j.descricao }));
+      box.appendChild(h('ul', { class: 'passos' }, j.servicos.map(function (s) { return h('li', { texto: s }); })));
+      box.appendChild(h('div', { class: 'estado' }, [h('span', { texto: 'Onde' }), h('span', { texto: j.endereco })]));
+      box.appendChild(h('div', { class: 'estado' }, [h('span', { texto: 'Horário' }), h('span', { texto: j.horario })]));
+      box.appendChild(h('div', { class: 'linha-botoes' }, [h('a', { class: 'botao secundario', href: 'tel:' + j.telefone.replace(/\D/g, ''), texto: 'Ligar ' + j.telefone })]));
+    }).catch(function (e) { limpar(box).appendChild(h('p', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  // ---------------------------------------------------------------- conta
+  function carregarConta() {
+    var u = estado.usuaria || {};
+    var box = limpar($('#conta-dados'));
+    [['Nome', u.nome], ['E-mail', u.email], ['Celular', u.telefone], ['Bairro', u.bairro || '—']].forEach(function (par) {
+      box.appendChild(h('div', { class: 'estado' }, [h('span', { texto: par[0] }), h('span', { texto: par[1] || '' })]));
+    });
+  }
+
+  // ---------------------------------------------------------------- painel da equipe (CT-ACE01)
+  function carregarEquipe() {
+    $$('#chips-status .chip').forEach(function (c) { c.classList.toggle('ativa', c.dataset.status === estado.statusEquipe); });
+    var ul = limpar($('#lista-equipe'));
+    ul.appendChild(h('li', { class: 'carregando', texto: 'Carregando…' }));
+    api('api_equipeListar', estado.token, estado.statusEquipe || null).then(function (lista) {
+      limpar(ul);
+      if (!lista.length) ul.appendChild(h('li', { class: 'suave', texto: 'Nenhuma solicitação.' }));
+      lista.forEach(function (a) {
+        var acoes = [];
+        if (a.status === 'SOLICITADO') acoes.push(['CONFIRMADO', 'Confirmar']);
+        if (a.status === 'CONFIRMADO') acoes.push(['REALIZADO', 'Marcar realizado']);
+        if (a.status === 'SOLICITADO' || a.status === 'CONFIRMADO') acoes.push(['CANCELADO', 'Cancelar']);
+        ul.appendChild(h('li', { class: 'item' }, [
+          h('span', { class: 'selo ' + a.status, texto: a.status }),
+          h('h3', { style: 'margin-top:6px', texto: a.usuariaNome + ' — ' + a.tipoDescricao }),
+          h('div', { class: 'meta', texto: 'Protocolo ' + a.protocolo + ' · ' + dataBr(a.dataPreferida) + ' · ' + a.periodoDescricao + ' · ' + a.modalidadeDescricao }),
+          a.usuariaTelefone ? h('div', { class: 'meta', texto: 'Contato: ' + a.usuariaTelefone }) : null,
+          a.observacao ? h('p', { class: 'meta', style: 'margin-top:6px', texto: '“' + a.observacao + '”' }) : null,
+          acoes.length ? h('div', { class: 'acoes' }, acoes.map(function (par) {
+            return h('button', { type: 'button', class: par[0] === 'CANCELADO' ? 'secundario' : '', texto: par[1], onclick: function (ev) {
+              var b = ev.currentTarget;
+              ocupado(b, true);
+              api('api_equipeAtualizar', estado.token, a.id, par[0]).then(function () { toast('Atualizado.'); carregarEquipe(); })
+                .catch(function (e) { ocupado(b, false); toast(e.mensagem); });
+            } });
+          })) : null,
+        ]));
+      });
+    }).catch(function (e) { limpar(ul).appendChild(h('li', { class: 'falha', texto: e.mensagem })); });
+  }
+
+  // ---------------------------------------------------------------- eventos
+  function renderEmergencia() {
+    $$('[data-emergencia]').forEach(function (box) {
+      limpar(box);
+      EMERGENCIA.forEach(function (t) {
+        box.appendChild(h('a', { href: 'tel:' + t.numero }, [h('strong', { texto: t.numero }), t.descricao]));
+      });
+    });
+  }
+
+  function ligarEventos() {
+    $('#saida-rapida').addEventListener('click', function () {
+      guardar('aurora_token', null);
+      window.open('https://www.google.com.br/search?q=previs%C3%A3o+do+tempo+salvador', '_top');
+    });
+
+    $$('[data-ir]').forEach(function (b) { b.addEventListener('click', function () { mostrar(b.dataset.ir); }); });
+    $$('[data-voltar]').forEach(function (b) { b.addEventListener('click', voltar); });
+
+    $$('.abas button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        $$('.abas button').forEach(function (x) { x.classList.toggle('ativa', x === b); });
+        $('#form-entrar').hidden = b.dataset.aba !== 'entrar';
+        $('#form-cadastro').hidden = b.dataset.aba !== 'cadastro';
+      });
+    });
+
+    $('#form-entrar').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = ev.currentTarget;
+      var d = lerForm(f);
+      var botao = $('button[type=submit]', f);
+      $('#erro-entrar').textContent = '';
+      ocupado(botao, true, 'Entrando…');
+      api('api_entrar', d.email, d.senha).then(function (r) { ocupado(botao, false); f.reset(); aoEntrar(r); })
+        .catch(function (e) { ocupado(botao, false); $('#erro-entrar').textContent = e.mensagem; });
+    });
+
+    $('#form-cadastro').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = ev.currentTarget;
+      var botao = $('button[type=submit]', f);
+      $('#erro-cadastro').textContent = '';
+      ocupado(botao, true, 'Criando conta…');
+      api('api_cadastrar', lerForm(f)).then(function (r) {
+        ocupado(botao, false);
+        f.reset();
+        aoEntrar(r);
+        toast('Conta criada. Cadastre seus contatos de confiança.');
+        mostrar('contatos');
+      }).catch(function (e) { ocupado(botao, false); mostrarErros(f, e, '#erro-cadastro'); });
+    });
+
+    $('#form-contato').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = ev.currentTarget;
+      var botao = $('button[type=submit]', f);
+      $('#erro-contato').textContent = '';
+      ocupado(botao, true, 'Salvando…');
+      api('api_salvarContato', estado.token, lerForm(f)).then(function () {
+        ocupado(botao, false);
+        resetarFormContato();
+        toast('Contato salvo.');
+        carregarContatos();
+      }).catch(function (e) { ocupado(botao, false); mostrarErros(f, e, '#erro-contato'); });
+    });
+    $('#ct-cancelar').addEventListener('click', resetarFormContato);
+
+    $('#form-atendimento').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = ev.currentTarget;
+      var botao = $('button[type=submit]', f);
+      $('#erro-atendimento').textContent = '';
+      ocupado(botao, true, 'Enviando…');
+      api('api_solicitarAtendimento', estado.token, lerForm(f)).then(function (a) {
+        ocupado(botao, false);
+        limparErros(f);
+        $('#at-obs').value = '';
+        toast('Solicitação enviada. Protocolo ' + a.protocolo + '.');
+        carregarAtendimentos();
+      }).catch(function (e) { ocupado(botao, false); mostrarErros(f, e, '#erro-atendimento'); });
+    });
+
+    $('#juridico-solicitar').addEventListener('click', function () {
+      if (!estado.token) { toast('Entre na sua conta para solicitar atendimento.'); return mostrar('entrada'); }
+      $('#at-tipo').value = 'JURIDICO';
+      mostrar('atendimento');
+    });
+
+    $$('#chips-modo .chip').forEach(function (c) {
+      c.addEventListener('click', function () { estado.rota.modo = c.dataset.modo; carregarRota(); });
+    });
+    $$('#chips-status .chip').forEach(function (c) {
+      c.addEventListener('click', function () { estado.statusEquipe = c.dataset.status; carregarEquipe(); });
+    });
+
+    $('#al-ponto-rota').addEventListener('click', function () {
+      if (estado.alerta && estado.alerta.pontoMaisProximo) abrirRota(estado.alerta.pontoMaisProximo.id);
+    });
+    $('#botao-encerrar').addEventListener('click', encerrarAlerta);
+    $('#botao-sair').addEventListener('click', sair);
+    $('#botao-conta').addEventListener('click', function () { mostrar('conta'); });
+    $('#botao-excluir').addEventListener('click', function (ev) {
+      var b = ev.currentTarget;
+      if (b.dataset.confirmar !== 'sim') { b.dataset.confirmar = 'sim'; b.textContent = 'Toque de novo para excluir definitivamente'; return; }
+      ocupado(b, true, 'Excluindo…');
+      api('api_excluirConta', estado.token, $('#conta-senha').value).then(function () {
+        ocupado(b, false);
+        $('#conta-senha').value = '';
+        toast('Conta excluída.');
+        sair();
+      }).catch(function (e) { ocupado(b, false); b.dataset.confirmar = ''; $('#erro-conta').textContent = e.mensagem; });
+    });
+
+    // Ao voltar para a aba, reenvia a posição se o alerta estiver ativo
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && estado.alerta) enviarLocalizacaoSePreciso();
+    });
+  }
+
+  function iniciar() {
+    renderEmergencia();
+    configurarPanico();
+    ligarEventos();
+    var token = ler('aurora_token');
+    if (!token) return telaInicial();
+    estado.token = token;
+    api('api_perfil', token).then(function (r) {
+      estado.usuaria = r.usuaria;
+      renderUsuaria();
+      verificarContatos();
+      if (r.alertaAtivo) {
+        estado.alerta = r.alertaAtivo;
+        renderAlerta();
+        iniciarCompartilhamento();
+      }
+      telaInicial();
+    }).catch(function () {
+      estado.token = null;
+      guardar('aurora_token', null);
+      telaInicial();
+    });
+  }
+
+  iniciar();
+})();
+</script>

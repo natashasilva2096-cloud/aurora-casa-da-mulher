@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.clasp.json
+.clasprc.json
+*.log
+.DS_Store
+Thumbs.db
+.env
+# BuildInfo é gerado pelo build
+shared/src/BuildInfo.js
+jest-resultado.json

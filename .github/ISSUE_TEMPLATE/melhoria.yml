@@ -1,0 +1,38 @@
+name: Melhoria / nova funcionalidade
+description: Propor uma funcionalidade ou mudança, ligada a um requisito
+title: "[Melhoria] "
+labels: [melhoria]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: Problema ou necessidade
+      description: Quem precisa disso e por quê?
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Proposta
+    validations:
+      required: true
+  - type: input
+    id: requisito
+    attributes:
+      label: Requisito relacionado
+      placeholder: RF05, RNF02, ABRIGO...
+  - type: textarea
+    id: aceite
+    attributes:
+      label: Critérios de aceitação
+      description: Como saberemos que está pronto? (Dado / Quando / Então)
+      placeholder: |
+        Dado que ...
+        Quando ...
+        Então ...
+    validations:
+      required: true
+  - type: textarea
+    id: riscos
+    attributes:
+      label: Riscos (segurança, privacidade, LGPD)

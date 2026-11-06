@@ -1,0 +1,181 @@
+# Pipeline de CI/CD com quality gates (falhar cedo; verificações rápidas antes das caras)
+#
+#   PR / push ──► qualidade (lint → unitários → integração + cobertura → build)
+#                     │  (só na main)
+#                     ▼
+#                 staging  (clasp push → deployment de staging → smoke test + confirmação do commit)
+#                     │
+#                     ▼
+#                 produção (aprovação manual no environment "producao" → deploy → smoke test)
+#
+#   Qualquer falha na main abre (ou comenta) uma issue de defeito com o roteiro de ACR.
+#
+# Configuração (ver docs/setup-google-e-ci.md):
+#   secret   CLASPRC_JSON                          conteúdo do ~/.clasprc.json do clasp
+#   vars     SCRIPT_ID_<APP>_<AMBIENTE>            ex.: SCRIPT_ID_AURORA_STAGING
+#   vars     DEPLOYMENT_ID_<APP>_<AMBIENTE>        ex.: DEPLOYMENT_ID_AURORA_PRODUCAO
+#   environments "staging" e "producao" (este com revisores obrigatórios)
+
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  qualidade:
+    name: Qualidade
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Gate 1 — análise estática (ESLint)
+        run: npm run lint
+
+      - name: Gate 2 — testes unitários (Nível 1)
+        run: npx jest --ci --selectProjects unit
+
+      - name: Gate 3 — integração, contrato e sistema simulado (Níveis 2–3) + cobertura
+        run: npm run test:ci
+
+      - name: Gate 4 — build dos apps
+        run: npm run build
+
+      - name: Resumo de métricas
+        if: always()
+        run: node scripts/resumo-metricas.js >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar relatórios
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorios-qualidade
+          path: |
+            coverage/
+            jest-resultado.json
+          retention-days: 14
+
+  staging:
+    name: Staging · ${{ matrix.app }}
+    needs: qualidade
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: aurora
+            sufixo: AURORA
+          - app: abrigo
+            sufixo: ABRIGO
+    env:
+      SCRIPT_ID: ${{ vars[format('SCRIPT_ID_{0}_STAGING', matrix.sufixo)] }}
+      DEPLOYMENT_ID: ${{ vars[format('DEPLOYMENT_ID_{0}_STAGING', matrix.sufixo)] }}
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+    steps:
+      - name: Verificar configuração do ambiente
+        id: cfg
+        run: |
+          if [[ -z "$SCRIPT_ID" || -z "$DEPLOYMENT_ID" || -z "$CLASPRC_JSON" ]]; then
+            echo "::warning::Staging de ${{ matrix.app }} ainda não configurado — deploy ignorado. Veja docs/setup-google-e-ci.md"
+            echo "pronto=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pronto=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.pronto == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.cfg.outputs.pronto == 'true'
+        with:
+          node-version: 20
+          cache: npm
+      - if: steps.cfg.outputs.pronto == 'true'
+        run: npm ci
+      - name: Deploy (clasp push + update-deployment)
+        if: steps.cfg.outputs.pronto == 'true'
+        env:
+          MENSAGEM: ${{ github.event.head_commit.message }}
+        run: scripts/deploy.sh "${{ matrix.app }}" "$SCRIPT_ID" "$DEPLOYMENT_ID" "staging ${GITHUB_SHA::7} ${MENSAGEM%%$'\n'*}"
+      - name: Smoke test + confirmação do commit publicado
+        if: steps.cfg.outputs.pronto == 'true'
+        run: scripts/smoke.sh "https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec" "$GITHUB_SHA"
+
+  producao:
+    name: Produção · ${{ matrix.app }}
+    needs: staging
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: producao
+      url: https://script.google.com/macros/s/${{ vars[format('DEPLOYMENT_ID_{0}_PRODUCAO', matrix.sufixo)] }}/exec
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: aurora
+            sufixo: AURORA
+          - app: abrigo
+            sufixo: ABRIGO
+    env:
+      SCRIPT_ID: ${{ vars[format('SCRIPT_ID_{0}_PRODUCAO', matrix.sufixo)] }}
+      DEPLOYMENT_ID: ${{ vars[format('DEPLOYMENT_ID_{0}_PRODUCAO', matrix.sufixo)] }}
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+    steps:
+      - name: Verificar configuração do ambiente
+        id: cfg
+        run: |
+          if [[ -z "$SCRIPT_ID" || -z "$DEPLOYMENT_ID" || -z "$CLASPRC_JSON" ]]; then
+            echo "::warning::Produção de ${{ matrix.app }} ainda não configurada — deploy ignorado."
+            echo "pronto=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pronto=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.pronto == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.cfg.outputs.pronto == 'true'
+        with:
+          node-version: 20
+          cache: npm
+      - if: steps.cfg.outputs.pronto == 'true'
+        run: npm ci
+      - name: Deploy (clasp push + update-deployment)
+        if: steps.cfg.outputs.pronto == 'true'
+        run: scripts/deploy.sh "${{ matrix.app }}" "$SCRIPT_ID" "$DEPLOYMENT_ID" "producao ${GITHUB_SHA::7}"
+      - name: Smoke test + confirmação do commit publicado
+        if: steps.cfg.outputs.pronto == 'true'
+        run: scripts/smoke.sh "https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec" "$GITHUB_SHA"
+
+  registrar-falha:
+    name: Abrir issue de defeito
+    needs: [qualidade, staging, producao]
+    if: failure() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const abrir = require('./scripts/github/abrir-issue-falha.js');
+            await abrir({ github, context, core, origem: 'pipeline' });

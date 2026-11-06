@@ -1,0 +1,14 @@
+# Manutenção adaptativa: mantém dependências e actions atualizadas.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [manutencao]
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [manutencao]

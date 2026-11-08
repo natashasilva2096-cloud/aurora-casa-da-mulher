@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -43,7 +43,7 @@ jobs:
     env:
       DEPLOYMENT_ID: ${{ vars[format('DEPLOYMENT_ID_{0}_{1}', matrix.app, matrix.ambiente)] }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Health check
         run: |
           if [[ -z "$DEPLOYMENT_ID" ]]; then
@@ -61,7 +61,7 @@ jobs:
       issues: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/github-script@v7
         with:
           script: |
